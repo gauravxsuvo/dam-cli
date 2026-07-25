@@ -3,6 +3,7 @@ use std::io::{self, Write};
 use std::path::Path;
 use serde_json;
 use crate::commands::seal;
+use crate::commands::base_commands::settings::get_toml_val;
 use flate2::read::ZlibDecoder;
 use sha2::{Digest, Sha256};
 
@@ -59,37 +60,51 @@ pub fn run(seal_id: String, preview: bool) {
         }
     }
 
-    let mut changed_locally = Vec::new();
-    for entry in &seal.files {
-        if entry.is_dir {
-            continue;
-        }
-        let workspace_target = Path::new(&entry.path);
-        if workspace_target.exists() {
-            if let Some(current_hash) = hash_file(workspace_target) {
-                if current_hash != entry.hash {
-                    changed_locally.push(entry.path.clone());
+    let config_content = fs::read_to_string(".dam/config.toml").unwrap_or_default();
+    let overwrite_check_disabled =
+        get_toml_val(&config_content, "disable_overwrite_check").as_deref() == Some("true");
+    let overwrite_check_exclude: Vec<String> = get_toml_val(&config_content, "overwrite_check_exclude")
+        .map(|v| {
+            v.split(',')
+                .map(|p| p.trim().to_string())
+                .filter(|p| !p.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if !overwrite_check_disabled {
+        let mut changed_locally = Vec::new();
+        for entry in &seal.files {
+            if entry.is_dir || overwrite_check_exclude.contains(&entry.path) {
+                continue;
+            }
+            let workspace_target = Path::new(&entry.path);
+            if workspace_target.exists() {
+                if let Some(current_hash) = hash_file(workspace_target) {
+                    if current_hash != entry.hash {
+                        changed_locally.push(entry.path.clone());
+                    }
                 }
             }
         }
-    }
 
-    if !changed_locally.is_empty() {
-        println!(
-            "\n⚠️  WARNING: The following files have local changes that don't match seal {}:",
-            seal_id
-        );
-        for path in &changed_locally {
-            println!("  - {}", path);
-        }
-        print!("Overwrite these files anyway? (y/N): ");
-        io::stdout().flush().unwrap();
+        if !changed_locally.is_empty() {
+            println!(
+                "\n⚠️  WARNING: The following files have local changes that don't match seal {}:",
+                seal_id
+            );
+            for path in &changed_locally {
+                println!("  - {}", path);
+            }
+            print!("Overwrite these files anyway? (y/N): ");
+            io::stdout().flush().unwrap();
 
-        let mut input = String::new();
-        io::stdin().read_line(&mut input).unwrap();
-        if !input.trim().eq_ignore_ascii_case("y") {
-            println!("Aborted. No files were changed.");
-            return;
+            let mut input = String::new();
+            io::stdin().read_line(&mut input).unwrap();
+            if !input.trim().eq_ignore_ascii_case("y") {
+                println!("Aborted. No files were changed.");
+                return;
+            }
         }
     }
 
