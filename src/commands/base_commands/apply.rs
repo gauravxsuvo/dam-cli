@@ -61,8 +61,9 @@ pub fn run(seal_id: String, preview: bool) {
     }
 
     let config_content = fs::read_to_string(".dam/config.toml").unwrap_or_default();
-    let overwrite_check_disabled =
-        get_toml_val(&config_content, "disable_overwrite_check").as_deref() == Some("true");
+    let overwrite_check_disabled = get_toml_val(&config_content, "disable_overwrite_check")
+        .unwrap_or_else(|| "false".to_string())
+        == "true";
     let overwrite_check_exclude: Vec<String> = get_toml_val(&config_content, "overwrite_check_exclude")
         .map(|v| {
             v.split(',')
