@@ -11,7 +11,7 @@ use std::fs;
 use std::io::{self, Write, IsTerminal};
 use std::path::{Path, PathBuf};
 
-const SUPPORTED_VERSIONS: &[&str] = &[env!("CARGO_PKG_VERSION"), "0.5.0", "0.5.1"];
+const SUPPORTED_VERSIONS: &[&str] = &[env!("CARGO_PKG_VERSION"), "0.5.4"];
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // --- TERMINAL COLOR SUPPORT FOR PATH WARNINGS --- //
