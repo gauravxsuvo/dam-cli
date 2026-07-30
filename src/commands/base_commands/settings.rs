@@ -36,6 +36,8 @@ fn display_all_settings(content: &str) {
     println!("enforce_password_on_project_import = {}", get_toml_val(content, "enforce_password_on_project_import").unwrap_or_else(|| "false".to_string()));
     println!("github_repo                        = \"{}\"", get_toml_val(content, "github_repo").unwrap_or_default());
     println!("github_cred_alias                  = \"{}\"", get_toml_val(content, "github_cred_alias").unwrap_or_default());
+    println!("disable_overwrite_check            = {}", get_toml_val(content, "disable_overwrite_check").unwrap_or_else(|| "false".to_string()));
+    println!("overwrite_check_exclude            = \"{}\"", get_toml_val(content, "overwrite_check_exclude").unwrap_or_default());
     println!("\n* Tip: To edit a setting, run: ");
     println!("  dam settings <key> <value>  OR  dam settings --interactive\n");
 }
@@ -97,6 +99,8 @@ fn update_single_setting(content: &str, key: &str, value: &str) {
         "enforce_password_on_project_import" | "enforce_password" => ("enforce_password_on_project_import", false),
         "github_repo" | "repo" => ("github_repo", true),
         "github_cred_alias" | "cred_alias" => ("github_cred_alias", true),
+        "disable_overwrite_check" => ("disable_overwrite_check", false),
+        "overwrite_check_exclude" => ("overwrite_check_exclude", true),
         _ => {
             println!("Error: Unsupported setting key '{}'.", key);
             return;
@@ -132,6 +136,8 @@ fn read_single_setting(content: &str, key: &str) {
         "enforce_password_on_project_import" | "enforce_password" => "enforce_password_on_project_import",
         "github_repo" | "repo" => "github_repo",
         "github_cred_alias" | "cred_alias" => "github_cred_alias",
+        "disable_overwrite_check" => "disable_overwrite_check",
+        "overwrite_check_exclude" => "overwrite_check_exclude",
         _ => {
             println!("Error: Unsupported setting key '{}'.", key);
             return;
@@ -154,6 +160,8 @@ fn interactive_menu(mut content: String) {
         let current_pwd = get_toml_val(&content, "enforce_password_on_project_import").unwrap_or_else(|| "false".to_string());
         let current_repo = get_toml_val(&content, "github_repo").unwrap_or_else(|| "".to_string());
         let current_alias = get_toml_val(&content, "github_cred_alias").unwrap_or_else(|| "".to_string());
+        let current_overwrite_disabled = get_toml_val(&content, "disable_overwrite_check").unwrap_or_else(|| "false".to_string());
+        let current_overwrite_exclude = get_toml_val(&content, "overwrite_check_exclude").unwrap_or_else(|| "".to_string());
 
         println!("\n=======================================================");
         println!("             DAM CONFIGURATION DASHBOARD               ");
@@ -165,9 +173,11 @@ fn interactive_menu(mut content: String) {
         println!(" 5. Enforce Password Encrypt         : {}", current_pwd);
         println!(" 6. GitHub Repository Target         : {}", if current_repo.is_empty() { "[Not Configured]" } else { &current_repo });
         println!(" 7. GitHub Credential Alias          : {}", if current_alias.is_empty() { "[Not Configured]" } else { &current_alias });
-        println!(" 8. Save and Exit");
+        println!(" 8. Disable Overwrite Hash Check     : {}", current_overwrite_disabled);
+        println!(" 9. Overwrite Check Exclude Paths    : {}", if current_overwrite_exclude.is_empty() { "[None]" } else { &current_overwrite_exclude });
+        println!("10. Save and Exit");
         println!("=======================================================");
-        print!("Choose option (1-8): ");
+        print!("Choose option (1-10): ");
         io::stdout().flush().unwrap();
 
         let mut choice = String::new();
@@ -234,7 +244,25 @@ fn interactive_menu(mut content: String) {
                     println!("GitHub credential alias set to: {}", trimmed);
                 }
             }
-            "8" | "" => {
+            "8" => {
+                let next_val = if current_overwrite_disabled == "true" { "false" } else { "true" };
+                content = set_toml_val(&content, "disable_overwrite_check", next_val, false);
+                println!("Rule changed: 'Disable Overwrite Hash Check' is now {}", next_val);
+            }
+            "9" => {
+                print!("Enter comma-separated paths to always skip the overwrite check for (or press Enter to clear): ");
+                io::stdout().flush().unwrap();
+                let mut next_exclude = String::new();
+                io::stdin().read_line(&mut next_exclude).unwrap();
+                let trimmed = next_exclude.trim();
+                content = set_toml_val(&content, "overwrite_check_exclude", trimmed, true);
+                if trimmed.is_empty() {
+                    println!("Overwrite check exclude paths cleared.");
+                } else {
+                    println!("Overwrite check exclude paths set to: {}", trimmed);
+                }
+            }
+            "10" | "" => {
                 fs::write(CONFIG_PATH, &content).unwrap();
                 println!("Changes successfully committed to config.toml!");
                 break;
