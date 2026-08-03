@@ -291,11 +291,6 @@ impl SyncProvider for GitHubSync {
             let seal_id = Self::extract_dam_seal_id(msg)
                 .unwrap_or_else(|| format!("seal_git_{}", &sha[..sha.len().min(8)]));
 
-            // If this seal is already present in our local chain or on disk, stop counting further remote commits.
-            if local_seals.contains(&seal_id) || Path::new(&format!(".dam/seals/{}.json", seal_id)).exists() {
-                break;
-            }
-
             remote_seal_ids.push(seal_id);
         }
 
