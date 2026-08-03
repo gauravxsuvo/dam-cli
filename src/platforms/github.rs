@@ -8,7 +8,7 @@ use flate2::Compression;
 use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
@@ -67,6 +67,7 @@ impl GitHubSync {
 
         let client = reqwest::blocking::Client::builder()
             .default_headers(headers)
+            .timeout(Duration::from_secs(120))
             .build()
             .unwrap();
 
@@ -77,18 +78,35 @@ impl GitHubSync {
         }
     }
 
-    fn extract_seal_id(msg: &str, fallback_sha: &str) -> String {
+    fn extract_dam_seal_id(msg: &str) -> Option<String> {
         if let Some(start) = msg.find("[dam:") {
             if let Some(end) = msg[start + 5..].find(']') {
-                return msg[start + 5..start + 5 + end].trim().to_string();
+                return Some(msg[start + 5..start + 5 + end].trim().to_string());
             }
         }
         if let Some(start) = msg.find("DAM Sync [") {
             if let Some(end) = msg[start + 10..].find(']') {
-                return msg[start + 10..start + 10 + end].trim().to_string();
+                return Some(msg[start + 10..start + 10 + end].trim().to_string());
             }
         }
-        format!("seal_git_{}", &fallback_sha[..8])
+        None
+    }
+
+    fn extract_seal_id(msg: &str, fallback_sha: &str) -> String {
+        Self::extract_dam_seal_id(msg)
+            .unwrap_or_else(|| format!("seal_git_{}", &fallback_sha[..8]))
+    }
+
+    fn format_api_response(resp: reqwest::blocking::Response) -> String {
+        let status = resp.status();
+        let body = resp.text().unwrap_or_else(|_| "<unable to read response body>".to_string());
+        let preview = body.lines().take(10).collect::<Vec<_>>().join("\n");
+        let truncated = if preview.len() > 1000 {
+            format!("{}...", &preview[..1000])
+        } else {
+            preview
+        };
+        format!("HTTP {}\n{}", status, truncated)
     }
 
     fn parse_cred(cred: Credential) -> AuthMethod {
@@ -249,22 +267,36 @@ impl SyncProvider for GitHubSync {
         }
 
         let commits_url = format!(
-            "https://api.github.com/repos/{}/{}/commits?sha={}",
+            "https://api.github.com/repos/{}/{}/commits?sha={}&per_page=100",
             self.owner, self.repo, stream
         );
         let commits_resp = self.client.get(&commits_url).send()?;
 
         if !commits_resp.status().is_success() {
-            return Ok((local_seals.len(), 0));
+            return Err(format!(
+                "GitHub API error while checking commits for '{}':\n{}",
+                stream,
+                Self::format_api_response(commits_resp)
+            )
+            .into());
         }
 
         let commits: Vec<serde_json::Value> = commits_resp.json()?;
         let mut remote_seal_ids = Vec::new();
 
+        // Build a remote seal id list using deterministic mapping for non-DAM commits.
         for c in &commits {
             let msg = c["commit"]["message"].as_str().unwrap_or("");
             let sha = c["sha"].as_str().unwrap_or("");
-            remote_seal_ids.push(Self::extract_seal_id(msg, sha));
+            let seal_id = Self::extract_dam_seal_id(msg)
+                .unwrap_or_else(|| format!("seal_git_{}", &sha[..sha.len().min(8)]));
+
+            // If this seal is already present in our local chain or on disk, stop counting further remote commits.
+            if local_seals.contains(&seal_id) || Path::new(&format!(".dam/seals/{}.json", seal_id)).exists() {
+                break;
+            }
+
+            remote_seal_ids.push(seal_id);
         }
 
         let mut ahead = 0;
@@ -299,7 +331,7 @@ impl SyncProvider for GitHubSync {
         let latest_seal: Seal = serde_json::from_str(&content)?;
 
         let commits_url = format!(
-            "https://api.github.com/repos/{}/{}/commits?sha={}",
+            "https://api.github.com/repos/{}/{}/commits?sha={}&per_page=100",
             self.owner, self.repo, stream
         );
         let commits_resp = self.client.get(&commits_url).send();
@@ -393,8 +425,8 @@ impl SyncProvider for GitHubSync {
                 let init_res = self.client.put(&init_url).json(&init_body).send()?;
                 if !init_res.status().is_success() {
                     return Err(format!(
-                        "Failed to bootstrap empty repository: {}",
-                        init_res.text()?
+                        "Failed to bootstrap empty repository:\n{}",
+                        Self::format_api_response(init_res)
                     )
                     .into());
                 }
@@ -588,15 +620,16 @@ impl SyncProvider for GitHubSync {
         println!("📡 Checking remote Git commits for stream '{}'...", stream);
 
         let commits_url = format!(
-            "https://api.github.com/repos/{}/{}/commits?sha={}",
+            "https://api.github.com/repos/{}/{}/commits?sha={}&per_page=100",
             self.owner, self.repo, stream
         );
         let commits_resp = self.client.get(&commits_url).send()?;
 
         if !commits_resp.status().is_success() {
             return Err(format!(
-                "Could not find remote stream '{}'. Nothing to pull.",
-                stream
+                "Could not find remote stream '{}'.\n{}",
+                stream,
+                Self::format_api_response(commits_resp)
             )
             .into());
         }
@@ -618,22 +651,25 @@ impl SyncProvider for GitHubSync {
             break;
         }
         // 2. See what commits GitHub has that we don't
-        let mut missing_commits = Vec::new();
+        let mut missing_commits: Vec<(serde_json::Value, String)> = Vec::new();
         let mut remote_head_seal_id = None;
 
-        for (i, c) in commits.iter().enumerate() {
+        for c in &commits {
             let msg = c["commit"]["message"].as_str().unwrap_or("");
             let sha = c["sha"].as_str().unwrap_or("");
-            let expected_sid = Self::extract_seal_id(msg, sha);
+            let expected_sid = Self::extract_dam_seal_id(msg)
+                .unwrap_or_else(|| format!("seal_git_{}", &sha[..sha.len().min(8)]));
 
-            if i == 0 {
+            if remote_head_seal_id.is_none() {
                 remote_head_seal_id = Some(expected_sid.clone());
             }
 
-            if local_seals.contains(&expected_sid) {
+            // If we already have this seal in our chain or on disk, stop collecting missing commits.
+            if local_seals.contains(&expected_sid) || Path::new(&format!(".dam/seals/{}.json", expected_sid)).exists() {
                 break;
             }
-            missing_commits.push(c.clone());
+
+            missing_commits.push((c.clone(), expected_sid));
         }
 
         if missing_commits.is_empty() {
@@ -652,15 +688,16 @@ impl SyncProvider for GitHubSync {
         // 4. Download missing history objects and seals safely to disk first
         missing_commits.reverse();
         println!(
-            "⬇️  Downloading {} missing history commit(s)...",
+            "⬇️  Downloading {} missing DAM-formatted history commit(s)...",
             missing_commits.len()
         );
         fs::create_dir_all(".dam/seals")?;
         fs::create_dir_all(".dam/objects")?;
 
         let mut current_remote_seal_id = None;
+        let mut tree_cache: HashMap<String, serde_json::Value> = HashMap::new();
 
-        for commit in missing_commits {
+        for (commit, new_seal_id) in missing_commits {
             let commit_sha = commit["sha"].as_str().unwrap();
             let raw_commit_msg = commit["commit"]["message"].as_str().unwrap().to_string();
             let commit_time = commit["commit"]["author"]["date"]
@@ -674,11 +711,46 @@ impl SyncProvider for GitHubSync {
                 raw_commit_msg.clone()
             };
 
-            let tree_url = format!(
-                "https://api.github.com/repos/{}/{}/git/trees/{}?recursive=1",
+            let commit_obj_url = format!(
+                "https://api.github.com/repos/{}/{}/git/commits/{}",
                 self.owner, self.repo, commit_sha
             );
-            let tree_json: serde_json::Value = self.client.get(&tree_url).send()?.json()?;
+            println!("   ⬇️  Fetching tree metadata for commit {}...", commit_sha);
+            let commit_obj_resp = self.client.get(&commit_obj_url).send()?;
+            if !commit_obj_resp.status().is_success() {
+                return Err(format!(
+                    "Failed to download commit object {}:\n{}",
+                    commit_sha,
+                    Self::format_api_response(commit_obj_resp)
+                )
+                .into());
+            }
+            let commit_obj: serde_json::Value = commit_obj_resp.json()?;
+            let tree_sha = commit_obj["tree"]["sha"]
+                .as_str()
+                .ok_or("Invalid commit object returned from GitHub")?;
+
+            let tree_url = format!(
+                "https://api.github.com/repos/{}/{}/git/trees/{}?recursive=1",
+                self.owner, self.repo, tree_sha
+            );
+            println!("   ⬇️  Downloading tree {} for commit {}...", tree_sha, commit_sha);
+            let tree_json = if let Some(cached) = tree_cache.get(tree_sha) {
+                cached.clone()
+            } else {
+                let tree_resp = self.client.get(&tree_url).send()?;
+                if !tree_resp.status().is_success() {
+                    return Err(format!(
+                        "Failed to download tree for commit {}:\n{}",
+                        commit_sha,
+                        Self::format_api_response(tree_resp)
+                    )
+                    .into());
+                }
+                let json: serde_json::Value = tree_resp.json()?;
+                tree_cache.insert(tree_sha.to_string(), json.clone());
+                json
+            };
 
             let mut new_files = Vec::new();
 
@@ -726,7 +798,6 @@ impl SyncProvider for GitHubSync {
                 }
             }
 
-            let new_seal_id = Self::extract_seal_id(&raw_commit_msg, commit_sha);
             // If we aren't diverged, link to our previous local seal. Otherwise, build remote chain.
             let parent_chain = match current_remote_seal_id.clone() {
                 Some(id) => vec![id],
@@ -825,7 +896,11 @@ impl SyncProvider for GitHubSync {
         );
         let resp = self.client.get(&url).send()?;
         if !resp.status().is_success() {
-            return Err(format!("Failed to list pull requests: {}", resp.text()?).into());
+            return Err(format!(
+                "Failed to list pull requests:\n{}",
+                Self::format_api_response(resp)
+            )
+            .into());
         }
 
         let prs: Vec<serde_json::Value> = resp.json()?;
@@ -848,9 +923,9 @@ impl SyncProvider for GitHubSync {
         let resp = self.client.get(&pr_url).send()?;
         if !resp.status().is_success() {
             return Err(format!(
-                "Pull request #{} not found or inaccessible: {}",
+                "Pull request #{} not found or inaccessible:\n{}",
                 number,
-                resp.text()?
+                Self::format_api_response(resp)
             )
             .into());
         }

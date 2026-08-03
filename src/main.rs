@@ -11,7 +11,7 @@ use std::fs;
 use std::io::{self, Write, IsTerminal};
 use std::path::{Path, PathBuf};
 
-const SUPPORTED_VERSIONS: &[&str] = &[env!("CARGO_PKG_VERSION"), "0.5.4"];
+const SUPPORTED_VERSIONS: &[&str] = &[env!("CARGO_PKG_VERSION"), "0.5.6"];
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // --- TERMINAL COLOR SUPPORT FOR PATH WARNINGS --- //
@@ -285,7 +285,19 @@ fn main() {
         Commands::Timeline { graph } => commands::timeline::run(graph),
         Commands::Stream { command } => commands::stream::run(command),
         Commands::Flowinto { name } => commands::flowinto::run(name),
-        Commands::Apply { seal_id, preview } => commands::apply::run(seal_id, preview),
+        Commands::Apply { seal_id, preview, latest, latest_global } => {
+            if latest && latest_global {
+                println!("Error: --latest and --latest-global are mutually exclusive.");
+            } else if latest_global {
+                commands::apply::run_latest_global(preview);
+            } else if latest {
+                commands::apply::run_latest(preview);
+            } else if let Some(id) = seal_id {
+                commands::apply::run(id, preview);
+            } else {
+                println!("Error: You must provide a seal ID or use --latest / --latest-global.");
+            }
+        }
         Commands::Merge { source, apply } => commands::merge::run(source, apply),
         Commands::Export { target } => match target {
             cli::ExportTarget::Seal { seal_id, zip } => {
@@ -311,13 +323,19 @@ fn main() {
             commands::settings::run(key, value, interactive);
         },
         Commands::Creds { command } => commands::creds::run(command),
-        Commands::Sync { stream, action, platform, force } => {
-            commands::sync::run(stream, action, platform, force);
+        Commands::Sync { stream, action, platform, force, verbose, releases } => {
+            if releases {
+                commands::releases::sync_releases(stream, action, platform, force);
+            } else {
+                commands::sync::run(stream, action, platform, force, verbose);
+            }
         },
         Commands::Update => {
             commands::update::run();
         }
         Commands::Pr { command } => commands::pr::run(command),
+        Commands::Releases { command } => commands::releases::run(command),
+        Commands::Stable { command } => commands::stable::run(command),
     }
 }
 

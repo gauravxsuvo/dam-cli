@@ -184,15 +184,25 @@ pub enum Commands {
     /// modifying anything on your disk.
     ///
     /// EXAMPLES:
-    ///   dam apply seal_001            # Overwrite files to match seal_001
-    ///   dam apply seal_001 --preview  # See what would happen, but do nothing
+    ///   dam apply seal_001                 # Overwrite files to match seal_001
+    ///   dam apply --latest                # Apply the latest seal from the current stream
+    ///   dam apply --latest-global         # Apply the latest seal across all streams
+    ///   dam apply seal_001 --preview      # See what would happen, but do nothing
     Apply {
         /// The seal ID (e.g. seal_001) to apply.
-        seal_id: String,
+        seal_id: Option<String>,
 
         /// Preview changes and affected files without modifying workspace files.
         #[arg(long, short)]
         preview: bool,
+
+        /// Apply the latest seal from the current active stream.
+        #[arg(long)]
+        latest: bool,
+
+        /// Apply the latest seal across all streams.
+        #[arg(long)]
+        latest_global: bool,
     },
 
     /// Merge another stream's seals into the current active stream.
@@ -273,6 +283,14 @@ pub enum Commands {
         /// Force synchronization of the main stream without confirmation.
         #[arg(long, short)]
         force: bool,
+
+        /// Show detailed sync actions and error details.
+        #[arg(long)]
+        verbose: bool,
+
+        /// Sync releases instead of streams. Intelligently handles stream updates first.
+        #[arg(long)]
+        releases: bool,
     },
 
     /// Check for CLI updates and view the latest release details.
@@ -296,6 +314,37 @@ pub enum Commands {
     Pr {
         #[command(subcommand)]
         command: Option<PrCommands>,
+    },
+
+    /// Manage releases: create, list, and push release artifacts to a cloud platform.
+    ///
+    /// A release is a named snapshot of your project that can be synced independently
+    /// of your stream history. Releases are tagged with version info and optional
+    /// metadata for distribution.
+    ///
+    /// EXAMPLES:
+    ///   dam releases                    # List all available releases
+    ///   dam releases create v1.0.0      # Create a new release from current state
+    ///   dam releases inspect v1.0.0    # View details of a specific release
+    ///   dam sync --releases             # Intelligently sync releases to remote platform
+    Releases {
+        #[command(subcommand)]
+        command: Option<ReleasesCommands>,
+    },
+
+    /// Manage stream-specific stable version assignments.
+    ///
+    /// Stable versions are stream-scoped tags for release-ready or long-lived branches,
+    /// separate from global product releases.
+    ///
+    /// EXAMPLES:
+    ///   dam stable assign main v1.0.0
+    ///   dam stable list
+    ///   dam stable inspect v1.0.0
+    ///   dam stable remove v1.0.0
+    Stable {
+        #[command(subcommand)]
+        command: Option<StableCommands>,
     },
 }
 #[derive(Subcommand)]
@@ -399,4 +448,60 @@ pub enum PrCommands {
     List,
     /// Check out a specific pull request number into a new local stream
     Checkout { number: u64 },
+}
+
+#[derive(Subcommand)]
+pub enum ReleasesCommands {
+    /// Create a new release tagged with a version/name from the current state
+    Create {
+        /// Release name or version (e.g., v1.0.0)
+        name: String,
+        /// Optional stream to source this release from (defaults to current stream)
+        #[arg(long)]
+        stream: Option<String>,
+        /// Optional description of the release
+        #[arg(long)]
+        description: Option<String>,
+        /// Optional comma-separated tags (e.g., stable,production)
+        #[arg(long)]
+        tags: Option<String>,
+    },
+    /// List all available releases
+    List,
+    /// Inspect details of a specific release
+    Inspect {
+        /// Release name/version to inspect
+        name: String,
+    },
+    /// Delete a release from local storage
+    Delete {
+        /// Release name/version to delete
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum StableCommands {
+    /// Assign a stable version to a specific stream
+    Assign {
+        /// Stream name to mark as stable
+        stream: String,
+        /// Stable version name
+        version: String,
+        /// Optional description for this stable version
+        #[arg(long)]
+        description: Option<String>,
+    },
+    /// List all stable stream version assignments
+    List,
+    /// Inspect a stable version assignment
+    Inspect {
+        /// Stable version name to inspect
+        version: String,
+    },
+    /// Remove a stable version assignment
+    Remove {
+        /// Stable version name to remove
+        version: String,
+    },
 }

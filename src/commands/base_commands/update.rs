@@ -4,6 +4,7 @@ use std::env;
 use std::fs::{self, File};
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const UPDATE_URL: &str = "https://dam-pcp.web.app/latest.json";
@@ -244,7 +245,9 @@ pub fn auto_check() {
             let mut input = String::new();
 
             if io::stdin().read_line(&mut input).is_ok() && input.trim().eq_ignore_ascii_case("y") {
-                execute_update(manifest);
+                if !package_manager_update() {
+                    execute_update(manifest);
+                }
                 std::process::exit(0);
             } else {
                 println!("Update deferred. Continuing execution...\n");
@@ -296,7 +299,9 @@ pub fn run() {
         return;
     }
 
-    execute_update(&manifest);
+    if !package_manager_update() {
+        execute_update(&manifest);
+    }
 }
 
 // --- CORE UPDATE LOGIC --- //
@@ -457,6 +462,130 @@ fn cleanup_old_exe() {
             let _ = fs::remove_file(old_exe);
         }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PackageManager {
+    Pacman,
+    Apt,
+    AptGet,
+    Dnf,
+    Yum,
+}
+
+impl PackageManager {
+    fn commands(&self) -> Vec<Vec<&'static str>> {
+        match self {
+            PackageManager::Pacman => vec![vec!["sudo", "pacman", "-Syu", "dam"]],
+            PackageManager::Apt => vec![
+                vec!["sudo", "apt", "update"],
+                vec!["sudo", "apt", "install", "--only-upgrade", "dam"],
+            ],
+            PackageManager::AptGet => vec![
+                vec!["sudo", "apt-get", "update"],
+                vec!["sudo", "apt-get", "install", "--only-upgrade", "dam"],
+            ],
+            PackageManager::Dnf => vec![vec!["sudo", "dnf", "upgrade", "dam"]],
+            PackageManager::Yum => vec![vec!["sudo", "yum", "update", "dam"]],
+        }
+    }
+
+    fn display_command(&self) -> String {
+        match self {
+            PackageManager::Pacman => "sudo pacman -Syu dam".to_string(),
+            PackageManager::Apt => "sudo apt update && sudo apt install --only-upgrade dam".to_string(),
+            PackageManager::AptGet => "sudo apt-get update && sudo apt-get install --only-upgrade dam".to_string(),
+            PackageManager::Dnf => "sudo dnf upgrade dam".to_string(),
+            PackageManager::Yum => "sudo yum update dam".to_string(),
+        }
+    }
+}
+
+fn find_program(name: &str) -> Option<PathBuf> {
+    if let Some(paths) = env::var_os("PATH") {
+        for path in env::split_paths(&paths) {
+            let candidate = path.join(name);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn is_system_install(exe: &Path) -> bool {
+    if let Ok(canon) = fs::canonicalize(exe) {
+        let system_dirs = ["/usr/bin", "/usr/local/bin", "/bin", "/usr/sbin", "/sbin"];
+        return system_dirs.iter().any(|d| canon.starts_with(d));
+    }
+    false
+}
+
+fn detect_package_manager_install() -> Option<PackageManager> {
+    let current_exe = env::current_exe().ok()?;
+    if !is_system_install(&current_exe) {
+        return None;
+    }
+
+    if find_program("pacman").is_some() {
+        return Some(PackageManager::Pacman);
+    }
+    if find_program("apt").is_some() {
+        return Some(PackageManager::Apt);
+    }
+    if find_program("apt-get").is_some() {
+        return Some(PackageManager::AptGet);
+    }
+    if find_program("dnf").is_some() {
+        return Some(PackageManager::Dnf);
+    }
+    if find_program("yum").is_some() {
+        return Some(PackageManager::Yum);
+    }
+    None
+}
+
+fn package_manager_update() -> bool {
+    if let Some(pm) = detect_package_manager_install() {
+        println!("⚠️  Detected package-managed installation via {}.", match pm {
+            PackageManager::Pacman => "pacman",
+            PackageManager::Apt => "apt",
+            PackageManager::AptGet => "apt-get",
+            PackageManager::Dnf => "dnf",
+            PackageManager::Yum => "yum",
+        });
+        println!("   This installation should be updated through your package manager, not by overwriting the binary.");
+        println!("   Recommended command: {}\n", pm.display_command());
+        print!("Run the package manager update now? (y/N): ");
+        io::stdout().flush().unwrap();
+
+        let mut input = String::new();
+        if io::stdin().read_line(&mut input).ok().map_or(false, |_| input.trim().eq_ignore_ascii_case("y")) {
+            for cmd in pm.commands() {
+                let mut program = Command::new(cmd[0]);
+                for arg in &cmd[1..] {
+                    program.arg(arg);
+                }
+                match program.status() {
+                    Ok(status) if status.success() => continue,
+                    Ok(status) => {
+                        println!("❌ Package manager command exited with status {}.", status);
+                        return false;
+                    }
+                    Err(e) => {
+                        println!("❌ Failed to execute package manager command: {}", e);
+                        return false;
+                    }
+                }
+            }
+            println!("✅ Package manager update finished successfully.");
+            return true;
+        } else {
+            println!("Update skipped. Use the recommended package manager command or run 'dam update' again later.");
+        }
+        return false;
+    }
+    false
 }
 
 // --- HELPER FUNCTIONS --- //

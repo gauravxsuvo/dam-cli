@@ -16,3 +16,5 @@ pub mod merge;
 pub mod creds;
 pub mod update;
 pub mod pr;
+pub mod releases;
+pub mod stable;

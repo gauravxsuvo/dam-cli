@@ -145,8 +145,19 @@ pub fn run(name: Option<String>, upgrade: bool) {
         // Example for future migrations:
         // if project_version < (0, 5, 0) { ... apply 0.5.0 updates ... }
 
+        // MIGRATION: Pre-v0.5.6 Overwrite Check Defaults
+        if project_version < (0, 5, 6) {
+            println!("-> Applying v0.5.6 overwrite-check configuration defaults...");
+            if !config_content.contains("disable_overwrite_check") {
+                config_content.push_str("disable_overwrite_check = false\n");
+            }
+            if !config_content.contains("overwrite_check_exclude") {
+                config_content.push_str("overwrite_check_exclude = []\n");
+            }
+        }
+
         // --- END MIGRATIONS ---
-        
+
         // 2. Finalize version label in config
         if !config_content.contains("version =") {
             config_content.push_str(&format!("\nversion = \"{}\"\n", CURRENT_VERSION));
@@ -270,6 +281,8 @@ suppress_nested_warning = {}
 purities_overrides_impurities = {}
 impurities_overrides_purities = {}
 enforce_password_on_project_import = {}
+disable_overwrite_check = false
+overwrite_check_exclude = []
 "#,
         CURRENT_VERSION, project_name, suppress_warning, p_override, i_override, enforce_pwd
     );
