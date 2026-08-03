@@ -174,6 +174,8 @@ pub fn run(
                         let result = with_spinner(verbose, &format!("Pushing stream '{}'...", s), || provider.push(&s));
                         if let Err(e) = result {
                             println!("❌ Push failed: {}", e);
+                        } else {
+                            verify_sync_status(&*provider, &s, verbose);
                         }
                     }
                 } else if ahead > 0 {
@@ -185,6 +187,8 @@ pub fn run(
                         let result = with_spinner(verbose, &format!("Pushing stream '{}'...", s), || provider.push(&s));
                         if let Err(e) = result {
                             println!("❌ Push failed: {}", e);
+                        } else {
+                            verify_sync_status(&*provider, &s, verbose);
                         }
                     }
                 } else if behind > 0 {
@@ -212,23 +216,37 @@ pub fn run(
 
 fn verify_sync_status(provider: &dyn platforms::SyncProvider, stream: &str, verbose: bool) {
     println!("\n🔍 Verifying DAM sync state for '{}'...", stream);
-    match with_spinner(verbose, &format!("Verifying sync status for '{}'...", stream), || provider.check_diff(stream)) {
-        Ok((ahead, behind)) => {
-            if ahead == 0 && behind == 0 {
-                println!("✅ Verification succeeded: '{}' is synchronized.", stream);
-            } else {
-                println!("⚠️ Verification detected remaining differences for '{}':", stream);
-                if ahead > 0 {
-                    println!("  ↑ {} local seal(s) still ahead.", ahead);
+    // Retry verification a few times to account for remote eventual consistency after pushes.
+    let mut attempt = 0;
+    let max_attempts = 5;
+    loop {
+        attempt += 1;
+        match with_spinner(verbose, &format!("Verifying sync status for '{}' (attempt {}/{})...", stream, attempt, max_attempts), || provider.check_diff(stream)) {
+            Ok((ahead, behind)) => {
+                if ahead == 0 && behind == 0 {
+                    println!("✅ Verification succeeded: '{}' is synchronized.", stream);
+                    return;
+                } else {
+                    println!("⚠️ Verification detected remaining differences for '{}':", stream);
+                    if ahead > 0 {
+                        println!("  ↑ {} local seal(s) still ahead.", ahead);
+                    }
+                    if behind > 0 {
+                        println!("  ↓ {} remote DAM-formatted change(s) still missing.", behind);
+                    }
+                    if attempt >= max_attempts {
+                        println!("  Suggestion: re-run 'dam sync --action pull' or inspect the remote repository history.");
+                        return;
+                    }
+                    // Wait briefly before retrying to allow GitHub eventual consistency
+                    std::thread::sleep(std::time::Duration::from_millis(600));
+                    continue;
                 }
-                if behind > 0 {
-                    println!("  ↓ {} remote DAM-formatted change(s) still missing.", behind);
-                }
-                println!("  Suggestion: re-run 'dam sync --action pull' or inspect the remote repository history.");
             }
-        }
-        Err(e) => {
-            println!("❌ Verification failed for '{}': {}", stream, e);
+            Err(e) => {
+                println!("❌ Verification failed for '{}': {}", stream, e);
+                return;
+            }
         }
     }
 }

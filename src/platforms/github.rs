@@ -81,12 +81,12 @@ impl GitHubSync {
     fn extract_dam_seal_id(msg: &str) -> Option<String> {
         if let Some(start) = msg.find("[dam:") {
             if let Some(end) = msg[start + 5..].find(']') {
-                return Some(msg[start + 5..start + 5 + end].trim().to_string());
+                return Some(msg[start + 5..start + 5 + end].trim().trim_matches('"').to_string());
             }
         }
         if let Some(start) = msg.find("DAM Sync [") {
             if let Some(end) = msg[start + 10..].find(']') {
-                return Some(msg[start + 10..start + 10 + end].trim().to_string());
+                return Some(msg[start + 10..start + 10 + end].trim().trim_matches('"').to_string());
             }
         }
         None
@@ -289,9 +289,23 @@ impl SyncProvider for GitHubSync {
             let msg = c["commit"]["message"].as_str().unwrap_or("");
             let sha = c["sha"].as_str().unwrap_or("");
             let seal_id = Self::extract_dam_seal_id(msg)
+                .map(|s| s.trim().trim_matches('"').to_string())
                 .unwrap_or_else(|| format!("seal_git_{}", &sha[..sha.len().min(8)]));
 
             remote_seal_ids.push(seal_id);
+        }
+
+        // Optional debug dump when troubleshooting mismatched ahead/behind counts
+        if std::env::var_os("DAM_DEBUG_SYNC").is_some() {
+            println!("--- DAM DEBUG: Remote seal ids (latest first, showing up to 50) ---");
+            for (i, id) in remote_seal_ids.iter().take(50).enumerate() {
+                println!("  {}: {}", i + 1, id);
+            }
+            println!("--- DAM DEBUG: Local seals (latest first) ---");
+            for (i, id) in local_seals.iter().take(50).enumerate() {
+                println!("  {}: {}", i + 1, id);
+            }
+            println!("--- END DEBUG ---");
         }
 
         let mut ahead = 0;
@@ -304,8 +318,24 @@ impl SyncProvider for GitHubSync {
         }
 
         let mut behind = 0;
+        // Build a set of seal files present on disk so we don't count already-downloaded
+        // seals as 'missing' just because the active meta chain doesn't include them.
+        let mut seals_on_disk = std::collections::HashSet::new();
+        if let Ok(entries) = fs::read_dir(".dam/seals") {
+            for e in entries.flatten() {
+                if let Some(name) = e.file_name().to_str() {
+                    // strip optional extension if present
+                    let id = name.trim().trim_end_matches(".json").to_string();
+                    seals_on_disk.insert(id);
+                }
+            }
+        }
+
         for sid in &remote_seal_ids {
-            if !sid.is_empty() && local_seals.contains(sid) {
+            if sid.is_empty() {
+                continue;
+            }
+            if local_seals.contains(sid) || seals_on_disk.contains(sid) {
                 break;
             }
             behind += 1;
