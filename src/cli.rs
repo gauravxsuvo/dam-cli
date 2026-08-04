@@ -16,7 +16,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Initialize a brand new reservoir (.DAM reservoir) in the current directory.
+    /// Initialize a brand new reservoir (.dam reservoir) in the current directory.
     ///
     /// This establishes your tracking pool, configuration files, and staging area.
     /// It creates a hidden `.dam` directory to store historical objects and stream data.
