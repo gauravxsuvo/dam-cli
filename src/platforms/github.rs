@@ -641,6 +641,93 @@ impl SyncProvider for GitHubSync {
         Ok(())
     }
 
+    fn sync_release(
+        &self,
+        release_name: &str,
+        release_version: &str,
+        seal_id: &str,
+        stream: &str,
+        description: Option<&String>,
+        tags: &[String],
+    ) -> Result<String, Box<dyn Error>> {
+        let body_description = if let Some(desc) = description {
+            if tags.is_empty() {
+                format!("{}\n\nDAM release from seal {}", desc.trim(), seal_id)
+            } else {
+                format!("{}\n\nTags: {}\n\nDAM release from seal {}", desc.trim(), tags.join(", "), seal_id)
+            }
+        } else if tags.is_empty() {
+            format!("DAM release from seal {}", seal_id)
+        } else {
+            format!("Tags: {}\n\nDAM release from seal {}", tags.join(", "), seal_id)
+        };
+
+        let safe_tag = release_version
+            .replace('/', "_")
+            .replace(' ', "_")
+            .replace('\n', "_");
+        let tag_url = format!(
+            "https://api.github.com/repos/{}/{}/releases/tags/{}",
+            self.owner,
+            self.repo,
+            safe_tag
+        );
+
+        let mut release_id = None;
+        if let Ok(resp) = self.client.get(&tag_url).send() {
+            if resp.status().is_success() {
+                if let Ok(existing) = resp.json::<serde_json::Value>() {
+                    if let Some(id) = existing["id"].as_u64() {
+                        release_id = Some(id);
+                    }
+                }
+            }
+        }
+
+        let release_body = serde_json::json!({
+            "tag_name": safe_tag,
+            "name": release_name,
+            "body": body_description,
+            "draft": false,
+            "prerelease": false,
+            "target_commitish": stream,
+        });
+
+        let result = if let Some(id) = release_id {
+            let update_url = format!(
+                "https://api.github.com/repos/{}/{}/releases/{}",
+                self.owner, self.repo, id
+            );
+            let resp = self.client.patch(&update_url).json(&release_body).send()?;
+            if !resp.status().is_success() {
+                return Err(format!(
+                    "Failed to update GitHub release '{}': {}",
+                    release_name,
+                    Self::format_api_response(resp)
+                )
+                .into());
+            }
+            Ok(format!("Updated GitHub release '{}'", release_name))
+        } else {
+            let create_url = format!(
+                "https://api.github.com/repos/{}/{}/releases",
+                self.owner, self.repo
+            );
+            let resp = self.client.post(&create_url).json(&release_body).send()?;
+            if !resp.status().is_success() {
+                return Err(format!(
+                    "Failed to create GitHub release '{}': {}",
+                    release_name,
+                    Self::format_api_response(resp)
+                )
+                .into());
+            }
+            Ok(format!("Created GitHub release '{}'", release_name))
+        };
+
+        result
+    }
+
     fn pull(&self, stream: &str) -> Result<(), Box<dyn Error>> {
         println!("📡 Checking remote Git commits for stream '{}'...", stream);
 

@@ -22,8 +22,47 @@ fn stable_path(version: &str) -> String {
     format!("{}/{}.json", stable_dir(), sanitize_name(version))
 }
 
+fn stable_latest_pointer_path(stream: &str) -> String {
+    format!("{}/latest-{}.txt", stable_dir(), sanitize_name(stream))
+}
+
 fn sanitize_name(name: &str) -> String {
     name.replace('/', "_").replace(' ', "_").replace('\n', "_")
+}
+
+fn resolve_unique_version_name(base: &str, kind: &str) -> String {
+    println!("❌ Error: {} '{}' already exists.", kind, base);
+    print!(
+        "Enter a different name or press Enter to auto-assign a timestamped name: ");
+    io::stdout().flush().unwrap();
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+    let candidate = input.trim();
+
+    if !candidate.is_empty() {
+        candidate.to_string()
+    } else {
+        format!("{}-{}", base, Utc::now().format("%Y%m%d%H%M%S"))
+    }
+}
+
+fn write_latest_stable_pointer(stream: &str, version: &str) {
+    let path = stable_latest_pointer_path(stream);
+    let _ = fs::write(&path, version);
+}
+
+fn read_latest_stable_pointer(stream: &str) -> Option<String> {
+    let path = stable_latest_pointer_path(stream);
+    if Path::new(&path).exists() {
+        if let Ok(content) = fs::read_to_string(&path) {
+            let name = content.trim().to_string();
+            if !name.is_empty() {
+                return Some(name);
+            }
+        }
+    }
+    None
 }
 
 pub fn run(command: Option<StableCommands>) {
@@ -33,14 +72,14 @@ pub fn run(command: Option<StableCommands>) {
     }
 
     match command {
-        Some(StableCommands::Assign { stream, version, description }) => {
+        Some(StableCommands::Assign { stream, version, description, latest }) => {
             let resolved_stream = stream.unwrap_or_else(|| {
                 fs::read_to_string(".dam/CURRENT")
                     .unwrap_or_else(|_| "main".to_string())
                     .trim()
                     .to_string()
             });
-            assign_stable(&resolved_stream, &version, description);
+            assign_stable(&resolved_stream, &version, description, latest);
         }
         Some(StableCommands::List) => {
             list_stable();
@@ -63,13 +102,19 @@ pub fn run(command: Option<StableCommands>) {
     }
 }
 
-fn assign_stable(stream: &str, version: &str, description: Option<String>) {
+fn assign_stable(stream: &str, version: &str, description: Option<String>, mark_latest: bool) {
     fs::create_dir_all(stable_dir()).unwrap_or_default();
 
-    let path = stable_path(version);
-    if Path::new(&path).exists() {
-        println!("❌ Error: Stable version '{}' already exists. Use a different version or remove the old one first.", version);
+    if version.trim().eq_ignore_ascii_case("latest") {
+        println!("❌ Error: 'latest' is reserved. Provide a stable version name and use --latest to mark it as the latest pointer.");
         return;
+    }
+
+    let mut version_name = version.to_string();
+    let mut path = stable_path(&version_name);
+    if Path::new(&path).exists() {
+        version_name = resolve_unique_version_name(version, "Stable version");
+        path = stable_path(&version_name);
     }
 
     let stream_meta_path = format!(".dam/streams/{}", stream);
@@ -86,7 +131,7 @@ fn assign_stable(stream: &str, version: &str, description: Option<String>) {
         });
 
     let stable = StableVersion {
-        version: version.to_string(),
+        version: version_name.clone(),
         stream: stream.to_string(),
         description,
         created_at: Utc::now().to_rfc3339(),
@@ -95,12 +140,16 @@ fn assign_stable(stream: &str, version: &str, description: Option<String>) {
 
     if let Ok(json) = serde_json::to_string_pretty(&stable) {
         if fs::write(&path, json).is_ok() {
-            println!("✅ Assigned stable version '{}' to stream '{}'.", version, stream);
+            println!("✅ Assigned stable version '{}' to stream '{}'.", version_name, stream);
+            if mark_latest {
+                write_latest_stable_pointer(stream, &version_name);
+                println!("✅ Marked '{}' as the latest stable for stream '{}'.", version_name, stream);
+            }
             return;
         }
     }
 
-    println!("❌ Error: Failed to save stable version '{}'.", version);
+    println!("❌ Error: Failed to save stable version '{}'.", version_name);
 }
 
 fn list_stable() {
@@ -177,6 +226,13 @@ fn inspect_latest_stable() {
     if filtered.is_empty() {
         println!("No stable versions found for stream '{}'.", current_stream);
         return;
+    }
+
+    if let Some(latest_name) = read_latest_stable_pointer(&current_stream) {
+        if filtered.iter().any(|s| s.version == latest_name) {
+            inspect_stable(&latest_name);
+            return;
+        }
     }
 
     filtered.sort_by(|a, b| b.created_at.cmp(&a.created_at));

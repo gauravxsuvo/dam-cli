@@ -21,7 +21,49 @@ fn releases_dir() -> &'static str {
 }
 
 fn release_path(name: &str) -> String {
-    format!("{}/{}.json", releases_dir(), name)
+    format!("{}/{}.json", releases_dir(), sanitize_release_name(name))
+}
+
+fn release_latest_pointer_path() -> &'static str {
+    ".dam/releases/LATEST"
+}
+
+fn sanitize_release_name(name: &str) -> String {
+    name.replace('/', "_").replace(' ', "_").replace('\n', "_")
+}
+
+fn resolve_unique_release_name(base: &str) -> String {
+    println!("❌ Error: Release '{}' already exists.", base);
+    print!(
+        "Enter a different name or press Enter to auto-assign a timestamped name: ");
+    io::stdout().flush().unwrap();
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+    let candidate = input.trim();
+
+    if !candidate.is_empty() {
+        candidate.to_string()
+    } else {
+        format!("{}-{}", base, Utc::now().format("%Y%m%d%H%M%S"))
+    }
+}
+
+fn write_latest_release_pointer(name: &str) {
+    let _ = fs::write(release_latest_pointer_path(), name);
+}
+
+fn read_latest_release_pointer() -> Option<String> {
+    let path = release_latest_pointer_path();
+    if Path::new(&path).exists() {
+        if let Ok(content) = fs::read_to_string(&path) {
+            let name = content.trim().to_string();
+            if !name.is_empty() {
+                return Some(name);
+            }
+        }
+    }
+    None
 }
 
 pub fn run(command: Option<ReleasesCommands>) {
@@ -31,14 +73,24 @@ pub fn run(command: Option<ReleasesCommands>) {
     }
 
     match command {
-        Some(ReleasesCommands::Create { name, stream, description, tags }) => {
-            create_release(&name, stream.as_deref(), description, tags);
+        Some(ReleasesCommands::Create { name, stream, description, tags, latest }) => {
+            create_release(&name, stream.as_deref(), description, tags, latest);
         }
         Some(ReleasesCommands::List) => {
             list_releases();
         }
-        Some(ReleasesCommands::Inspect { name }) => {
-            inspect_release(&name);
+        Some(ReleasesCommands::Inspect { name, latest }) => {
+            if latest {
+                if let Some(latest_name) = read_latest_release_pointer() {
+                    inspect_release(&latest_name);
+                } else {
+                    println!("📦 No latest release pointer found.");
+                }
+            } else if let Some(name) = name {
+                inspect_release(&name);
+            } else {
+                println!("❌ Error: Please provide a release name or use --latest.");
+            }
         }
         Some(ReleasesCommands::Delete { name }) => {
             delete_release(&name);
@@ -49,14 +101,20 @@ pub fn run(command: Option<ReleasesCommands>) {
     }
 }
 
-fn create_release(name: &str, stream_opt: Option<&str>, description: Option<String>, tags: Option<String>) {
+fn create_release(name: &str, stream_opt: Option<&str>, description: Option<String>, tags: Option<String>, mark_latest: bool) {
     // Ensure releases directory exists
     fs::create_dir_all(releases_dir()).unwrap_or_default();
 
-    let path = release_path(name);
-    if Path::new(&path).exists() {
-        println!("❌ Error: Release '{}' already exists.", name);
+    if name.trim().eq_ignore_ascii_case("latest") {
+        println!("❌ Error: 'latest' is reserved. Provide a real release name and use --latest to mark it as current.");
         return;
+    }
+
+    let mut release_name = name.to_string();
+    let mut path = release_path(&release_name);
+    while Path::new(&path).exists() {
+        release_name = resolve_unique_release_name(&release_name);
+        path = release_path(&release_name);
     }
 
     let current_stream = stream_opt
@@ -82,8 +140,8 @@ fn create_release(name: &str, stream_opt: Option<&str>, description: Option<Stri
         .unwrap_or_default();
 
     let release = Release {
-        name: name.to_string(),
-        version: name.to_string(),
+        name: release_name.clone(),
+        version: release_name.clone(),
         description,
         tags: parsed_tags,
         created_at: Utc::now().to_rfc3339(),
@@ -93,17 +151,21 @@ fn create_release(name: &str, stream_opt: Option<&str>, description: Option<Stri
 
     if let Ok(json) = serde_json::to_string_pretty(&release) {
         if fs::write(&path, json).is_ok() {
-            println!("✅ Created release '{}' from seal '{}' on stream '{}'", name, latest_seal, current_stream);
+            println!("✅ Created release '{}' from seal '{}' on stream '{}'.", release_name, latest_seal, current_stream);
             if let Some(desc) = &release.description {
                 println!("   Description: {}", desc);
             }
             if !release.tags.is_empty() {
                 println!("   Tags: {}", release.tags.join(", "));
             }
+            if mark_latest {
+                write_latest_release_pointer(&release_name);
+                println!("✅ Marked '{}' as the latest release.", release_name);
+            }
             return;
         }
     }
-    println!("❌ Error: Failed to save release '{}'", name);
+    println!("❌ Error: Failed to save release '{}'", release_name);
 }
 
 fn list_releases() {
@@ -289,7 +351,14 @@ pub fn sync_releases(
                 }
 
                 println!("  📤 Syncing release '{}' to {}...", release_name, provider_name);
-                match sync_release_to_platform(&provider, &release, &provider_name) {
+                match provider.sync_release(
+                    &release.name,
+                    &release.version,
+                    &release.seal_id,
+                    &release.stream,
+                    release.description.as_ref(),
+                    &release.tags,
+                ) {
                     Ok(msg) => {
                         println!("  ✅ {}", msg);
                     }
@@ -302,25 +371,3 @@ pub fn sync_releases(
     }
 }
 
-fn sync_release_to_platform(
-    _provider: &Box<dyn crate::platforms::SyncProvider>,
-    release: &Release,
-    platform: &str,
-) -> Result<String, String> {
-    // This is a placeholder for platform-specific release sync logic.
-    // In a real implementation, you'd push the release bundle to GitHub Releases, etc.
-    
-    match platform.to_lowercase().as_str() {
-        "github" => {
-            // For GitHub, create a Release object with the seal as the artifact
-            Ok(format!(
-                "Release '{}' would be pushed to GitHub as a release tag with seal '{}'",
-                release.name, release.seal_id
-            ))
-        }
-        _ => Ok(format!(
-            "Release '{}' synced to {} (seal: {})",
-            release.name, platform, release.seal_id
-        )),
-    }
-}

@@ -341,8 +341,8 @@ pub enum Commands {
     ///
     /// EXAMPLES:
     ///   dam releases                    # List all available releases
-    ///   dam releases create v1.0.0      # Create a new release from current state
-    ///   dam releases inspect v1.0.0    # View details of a specific release
+    ///   dam releases create v1.0.0 --latest   # Create a new release and mark it as latest
+    ///   dam releases inspect --latest        # Inspect the current latest release
     ///   dam sync --releases             # Intelligently sync releases to remote platform
     Releases {
         #[command(subcommand)]
@@ -355,9 +355,9 @@ pub enum Commands {
     /// separate from global product releases.
     ///
     /// EXAMPLES:
-    ///   dam stable assign main v1.0.0
+    ///   dam stable assign main v1.0.0 --latest
     ///   dam stable list
-    ///   dam stable inspect v1.0.0
+    ///   dam stable inspect --latest
     ///   dam stable remove v1.0.0
     Stable {
         #[command(subcommand)]
@@ -482,13 +482,19 @@ pub enum ReleasesCommands {
         /// Optional comma-separated tags (e.g., stable,production)
         #[arg(long)]
         tags: Option<String>,
+        /// Mark this release as the latest release pointer for the project
+        #[arg(long)]
+        latest: bool,
     },
     /// List all available releases
     List,
     /// Inspect details of a specific release
     Inspect {
-        /// Release name/version to inspect
-        name: String,
+        /// Release name/version to inspect. Optional when using `--latest`.
+        name: Option<String>,
+        /// Inspect the release currently marked as latest.
+        #[arg(long)]
+        latest: bool,
     },
     /// Delete a release from local storage
     Delete {
@@ -509,6 +515,9 @@ pub enum StableCommands {
         /// Optional description for this stable version
         #[arg(long)]
         description: Option<String>,
+        /// Mark this stable assignment as the latest stable pointer for the stream
+        #[arg(long)]
+        latest: bool,
     },
     /// List all stable stream version assignments
     List,
