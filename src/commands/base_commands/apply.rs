@@ -1,17 +1,112 @@
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::Path;
+use std::collections::HashMap;
+use std::time::UNIX_EPOCH;
 use serde_json;
+use serde::{Deserialize, Serialize};
 use crate::commands::seal;
+use crate::commands::stream;
 use crate::commands::base_commands::settings::get_toml_val;
+use chrono::{DateTime, FixedOffset};
 use flate2::read::ZlibDecoder;
 use sha2::{Digest, Sha256};
 
-fn hash_file(path: &Path) -> Option<String> {
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct HashCacheEntry {
+    hash: String,
+    mtime: i64,
+    size: u64,
+}
+
+fn cache_path() -> &'static str {
+    ".dam/hash_cache.json"
+}
+
+fn load_hash_cache() -> HashMap<String, HashCacheEntry> {
+    if let Ok(s) = fs::read_to_string(cache_path()) {
+        if let Ok(map) = serde_json::from_str(&s) {
+            return map;
+        }
+    }
+    HashMap::new()
+}
+
+fn save_hash_cache(map: &HashMap<String, HashCacheEntry>) {
+    if let Ok(s) = serde_json::to_string_pretty(map) {
+        let _ = fs::create_dir_all(".dam");
+        let _ = fs::write(cache_path(), s);
+    }
+}
+
+fn hash_file_with_cache(path: &Path, cache: &mut HashMap<String, HashCacheEntry>) -> Option<String> {
+    let meta = path.metadata().ok()?;
+    let mtime = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
+    let size = meta.len();
+    let key = path.to_string_lossy().to_string();
+
+    if let Some(entry) = cache.get(&key) {
+        if entry.mtime == mtime && entry.size == size {
+            return Some(entry.hash.clone());
+        }
+    }
+
     let mut file = File::open(path).ok()?;
     let mut hasher = Sha256::new();
     io::copy(&mut file, &mut hasher).ok()?;
-    Some(format!("{:x}", hasher.finalize()))
+    let computed = format!("{:x}", hasher.finalize());
+
+    cache.insert(key, HashCacheEntry { hash: computed.clone(), mtime, size });
+    Some(computed)
+}
+
+fn find_latest_global_seal() -> Option<String> {
+    let seals_dir = Path::new(".dam/seals");
+    if !seals_dir.exists() {
+        return None;
+    }
+
+    let mut latest_id = None;
+    let mut latest_ts: Option<DateTime<FixedOffset>> = None;
+
+    for entry in fs::read_dir(seals_dir).unwrap().flatten() {
+        let path = entry.path();
+        if path.extension().map_or(false, |ext| ext == "json") {
+            if let Ok(content) = fs::read_to_string(&path) {
+                if let Ok(seal) = serde_json::from_str::<seal::Seal>(&content) {
+                    if let Ok(ts) = DateTime::parse_from_rfc3339(&seal.timestamp) {
+                        if latest_ts.as_ref().map_or(true, |current| ts > *current) {
+                            latest_ts = Some(ts);
+                            latest_id = Some(seal.id.clone());
+                        }
+                    } else if latest_id.is_none() {
+                        latest_id = Some(seal.id.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    latest_id
+}
+
+pub fn run_latest(preview: bool) {
+    let current_stream = fs::read_to_string(".dam/CURRENT").unwrap_or_else(|_| "main".to_string()).trim().to_string();
+    let stream_meta = stream::get_or_create_meta(&current_stream);
+
+    if let Some(latest) = stream_meta.latest_seal {
+        run(latest, preview);
+    } else {
+        println!("Error: No latest seal found in the current stream '{}'.", current_stream);
+    }
+}
+
+pub fn run_latest_global(preview: bool) {
+    if let Some(latest) = find_latest_global_seal() {
+        run(latest, preview);
+    } else {
+        println!("Error: No seals found in the repository.");
+    }
 }
 
 pub fn run(seal_id: String, preview: bool) {
@@ -73,6 +168,9 @@ pub fn run(seal_id: String, preview: bool) {
         })
         .unwrap_or_default();
 
+    // Load hash cache to speed up repeated hash computations on large repos
+    let mut hash_cache = load_hash_cache();
+
     if !overwrite_check_disabled {
         let mut changed_locally = Vec::new();
         for entry in &seal.files {
@@ -81,7 +179,7 @@ pub fn run(seal_id: String, preview: bool) {
             }
             let workspace_target = Path::new(&entry.path);
             if workspace_target.exists() {
-                if let Some(current_hash) = hash_file(workspace_target) {
+                if let Some(current_hash) = hash_file_with_cache(workspace_target, &mut hash_cache) {
                     if current_hash != entry.hash {
                         changed_locally.push(entry.path.clone());
                     }
@@ -104,6 +202,8 @@ pub fn run(seal_id: String, preview: bool) {
             io::stdin().read_line(&mut input).unwrap();
             if !input.trim().eq_ignore_ascii_case("y") {
                 println!("Aborted. No files were changed.");
+                // Save partial cache updates so subsequent runs benefit
+                save_hash_cache(&hash_cache);
                 return;
             }
         }
@@ -134,5 +234,8 @@ pub fn run(seal_id: String, preview: bool) {
             }
         }
     }
+    // Save updated hash cache for future runs
+    save_hash_cache(&hash_cache);
+
     println!("\nStream successfully brought back to state: {}", seal_id);
 }

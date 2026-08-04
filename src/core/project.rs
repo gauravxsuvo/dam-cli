@@ -22,6 +22,7 @@ pub struct ProjectMetadata {
     pub profile_used: String,
     pub setup_commands: Vec<String>,
     pub is_encrypted: bool,
+    pub streams: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -47,6 +48,7 @@ struct ProfileConfig {
     description: String,
     include: Vec<String>,
     exclude: Vec<String>,
+    streams: Option<Vec<String>>,
 }
 
 pub fn export_project(project_name: &str, profile_name: Option<String>) {
@@ -84,6 +86,25 @@ pub fn export_project(project_name: &str, profile_name: Option<String>) {
                 }
             }
         }
+        // Always include important DAM metadata directories if present
+        if Path::new(".dam/releases").exists() {
+            for entry in fs::read_dir(".dam/releases").unwrap().flatten() {
+                let p = entry.path();
+                if p.is_file() {
+                    let name = format!(".dam/releases/{}", entry.file_name().to_string_lossy());
+                    tar.append_path_with_name(&p, &name).unwrap();
+                }
+            }
+        }
+        if Path::new(".dam/streams").exists() {
+            for entry in fs::read_dir(".dam/streams").unwrap().flatten() {
+                let p = entry.path();
+                if p.is_file() {
+                    let name = format!(".dam/streams/{}", entry.file_name().to_string_lossy());
+                    tar.append_path_with_name(&p, &name).unwrap();
+                }
+            }
+        }
         tar.finish().unwrap();
     }
 
@@ -103,6 +124,7 @@ pub fn export_project(project_name: &str, profile_name: Option<String>) {
         profile_used: target_profile.clone(),
         setup_commands: config.setup.commands.clone(),
         is_encrypted: enforce_pwd,
+        streams: profile.streams.clone().or_else(get_export_streams),
     };
     let meta_json = serde_json::to_string_pretty(&meta).unwrap();
 
@@ -183,15 +205,101 @@ pub fn import_project(file_path: &str) {
     println!("Successfully extracted files to {}", target_dir.display());
 
     // 6. Handle Setup Commands
-    if meta.provider == "custom" && !meta.setup_commands.is_empty() {
-        let setup_script = target_dir.join("setup_untrusted.sh");
-        let script_content = format!("#!/bin/bash\n# WARNING: Review before executing\n\n{}", meta.setup_commands.join("\n"));
-        fs::write(&setup_script, script_content).unwrap();
-        println!("WARNING: Custom setup commands detected. Written to {}. Please review manually before running.", setup_script.display());
-    } else if !meta.setup_commands.is_empty() {
-        println!("\nSuggested native setup commands:");
-        for cmd in meta.setup_commands {
-            println!("  $ {}", cmd);
+    // 6. Handle Setup Commands with trusted/untrusted policy
+    if !meta.setup_commands.is_empty() {
+        // Determine provider-allowed commands
+        let allowed = providers::allowed_commands_for(&meta.provider);
+
+        let mut trusted: Vec<String> = Vec::new();
+        let mut untrusted: Vec<String> = Vec::new();
+
+        for cmd in &meta.setup_commands {
+            let mut matched = false;
+            for a in &allowed {
+                if cmd.trim().starts_with(a) {
+                    matched = true;
+                    break;
+                }
+            }
+            if matched {
+                trusted.push(cmd.clone());
+            } else {
+                untrusted.push(cmd.clone());
+            }
+        }
+
+        println!("\nSetup Commands (provider: {})", meta.provider);
+        println!("─────────────────────────────────────");
+        for t in &trusted {
+            println!("  ✅ Trusted : {}", t);
+        }
+        for u in &untrusted {
+            println!("  ⚠️  Untrusted: {}", u);
+        }
+
+        // Single block: ask to run trusted commands
+        if !trusted.is_empty() {
+            println!("\nTrusted commands can be executed now.");
+            print!("Execute trusted commands now? (Y/n): ");
+            std::io::stdout().flush().unwrap();
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input).unwrap();
+            let choice = input.trim().to_lowercase();
+            if choice.is_empty() || choice == "y" {
+                for cmd in &trusted {
+                    println!("Running: {}", cmd);
+                    let status = std::process::Command::new("sh")
+                        .arg("-c")
+                        .arg(cmd)
+                        .current_dir(&target_dir)
+                        .status();
+                    match status {
+                        Ok(s) if s.success() => println!("  ✓ Command succeeded"),
+                        Ok(s) => println!("  ❌ Command failed: exit {}",&s),
+                        Err(e) => println!("  ❌ Failed to run command: {}", e),
+                    }
+                }
+            } else {
+                println!("Skipping trusted command execution.");
+            }
+        }
+
+        // Always write untrusted commands to setup_untrusted.sh for review
+        if !untrusted.is_empty() {
+            let setup_script = target_dir.join("setup_untrusted.sh");
+            let script_content = format!("#!/bin/bash\n# UNTRUSTED: Review before executing\n\n{}", untrusted.join("\n"));
+            fs::write(&setup_script, script_content).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = fs::metadata(&setup_script).unwrap().permissions();
+                perms.set_mode(0o750);
+                let _ = fs::set_permissions(&setup_script, perms);
+            }
+            println!("Untrusted commands written to {}. Review before running.", setup_script.display());
+
+            // Require explicit 'yes' to run untrusted commands immediately
+            print!("Type 'yes' to execute untrusted commands now, or press Enter to keep for review: ");
+            std::io::stdout().flush().unwrap();
+            let mut confirm = String::new();
+            std::io::stdin().read_line(&mut confirm).unwrap();
+            if confirm.trim() == "yes" {
+                for cmd in &untrusted {
+                    println!("Running untrusted: {}", cmd);
+                    let status = std::process::Command::new("sh")
+                        .arg("-c")
+                        .arg(cmd)
+                        .current_dir(&target_dir)
+                        .status();
+                    match status {
+                        Ok(s) if s.success() => println!("  ✓ Command succeeded"),
+                        Ok(s) => println!("  ❌ Command failed: exit {}", &s),
+                        Err(e) => println!("  ❌ Failed to run command: {}", e),
+                    }
+                }
+            } else {
+                println!("Left untrusted commands in {} for manual review.", setup_script.display());
+            }
         }
     }
 }
@@ -218,6 +326,23 @@ pub fn inspect_project(file_path: &str) {
         println!("  > {}", cmd);
     }
     println!("--------------------------------------\n");
+}
+
+fn get_export_streams() -> Option<Vec<String>> {
+    let streams_dir = Path::new(".dam/streams");
+    if !streams_dir.exists() {
+        return None;
+    }
+    let streams = fs::read_dir(streams_dir)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect::<Vec<_>>();
+    if streams.is_empty() {
+        None
+    } else {
+        Some(streams)
+    }
 }
 
 fn is_allowed(path: &str, includes: &[String], excludes: &[String]) -> bool {

@@ -48,6 +48,13 @@ pub fn get_or_create_meta(name: &str) -> StreamMeta {
 
 pub fn save_meta(meta: &StreamMeta) {
     let path = format!(".dam/streams/{}", meta.name);
+    if let Some(parent) = Path::new(&path).parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent).unwrap_or_else(|err| {
+                panic!("Unable to create stream metadata directory {}: {}", parent.display(), err);
+            });
+        }
+    }
     fs::write(path, serde_json::to_string_pretty(meta).unwrap()).unwrap();
 }
 

@@ -37,7 +37,7 @@ fn display_all_settings(content: &str) {
     println!("github_repo                        = \"{}\"", get_toml_val(content, "github_repo").unwrap_or_default());
     println!("github_cred_alias                  = \"{}\"", get_toml_val(content, "github_cred_alias").unwrap_or_default());
     println!("disable_overwrite_check            = {}", get_toml_val(content, "disable_overwrite_check").unwrap_or_else(|| "false".to_string()));
-    println!("overwrite_check_exclude            = \"{}\"", get_toml_val(content, "overwrite_check_exclude").unwrap_or_default());
+    println!("overwrite_check_exclude            = {}", get_toml_val(content, "overwrite_check_exclude").unwrap_or_default());
     println!("\n* Tip: To edit a setting, run: ");
     println!("  dam settings <key> <value>  OR  dam settings --interactive\n");
 }
@@ -48,8 +48,19 @@ pub fn get_toml_val(content: &str, key: &str) -> Option<String> {
         if trimmed.starts_with(key) {
             if let Some(eq_idx) = trimmed.find('=') {
                 let value_part = trimmed[eq_idx + 1..].trim();
+                // String value
                 if value_part.starts_with('"') && value_part.ends_with('"') {
                     return Some(value_part[1..value_part.len() - 1].to_string());
+                }
+                // TOML array value -> normalize to comma-separated list without quotes
+                if value_part.starts_with('[') && value_part.ends_with(']') {
+                    let inner = &value_part[1..value_part.len() - 1];
+                    let parts: Vec<String> = inner
+                        .split(',')
+                        .map(|s| s.trim().trim_matches('"').to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    return Some(parts.join(","));
                 }
                 return Some(value_part.to_string());
             }
@@ -61,7 +72,16 @@ pub fn get_toml_val(content: &str, key: &str) -> Option<String> {
 pub fn set_toml_val(content: &str, key: &str, new_value: &str, is_string: bool) -> String {
     let mut lines: Vec<String> = Vec::new();
     let mut found = false;
-    let formatted = if is_string {
+    // Special-case: store overwrite_check_exclude as a TOML array for safety and editability
+    let formatted = if is_string && key == "overwrite_check_exclude" {
+        let trimmed = new_value.trim();
+        if trimmed.is_empty() {
+            "[]".to_string()
+        } else {
+            let items: Vec<String> = trimmed.split(',').map(|s| format!("\"{}\"", s.trim())).collect();
+            format!("[{}]", items.join(", "))
+        }
+    } else if is_string {
         format!("\"{}\"", new_value)
     } else {
         new_value.to_string()

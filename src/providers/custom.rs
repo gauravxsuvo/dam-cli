@@ -34,6 +34,11 @@ exclude = [".git/**", ".dam/**"]
 description = "Basic Contributor Access"
 include = ["**/*"]
 exclude = [".git/**", ".dam/**", "**/.env", "**/*.secret"]
+
+# Helpful defaults so users know what sections are supported
+streams = ["main"]
+releases = []
+stable = []
 "#, project_name)
     }
 }

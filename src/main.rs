@@ -11,7 +11,7 @@ use std::fs;
 use std::io::{self, Write, IsTerminal};
 use std::path::{Path, PathBuf};
 
-const SUPPORTED_VERSIONS: &[&str] = &[env!("CARGO_PKG_VERSION"), "0.5.4"];
+const SUPPORTED_VERSIONS: &[&str] = &[env!("CARGO_PKG_VERSION"), "0.5.6"];
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // --- TERMINAL COLOR SUPPORT FOR PATH WARNINGS --- //
@@ -192,8 +192,8 @@ fn main() {
     let original_cwd = env::current_dir().unwrap();
 
     // The 'source' command handles its own initialization logic safely in the current dir.
-    if let Commands::Source { name, upgrade } = cli.command {
-        commands::source::run(name, upgrade);
+    if let Commands::Source { name, upgrade, profile } = cli.command {
+        commands::source::run(name, upgrade, profile);
         return;
     }
 
@@ -285,7 +285,19 @@ fn main() {
         Commands::Timeline { graph } => commands::timeline::run(graph),
         Commands::Stream { command } => commands::stream::run(command),
         Commands::Flowinto { name } => commands::flowinto::run(name),
-        Commands::Apply { seal_id, preview } => commands::apply::run(seal_id, preview),
+        Commands::Apply { seal_id, preview, latest, latest_global } => {
+            if latest && latest_global {
+                println!("Error: --latest and --latest-global are mutually exclusive.");
+            } else if latest_global {
+                commands::apply::run_latest_global(preview);
+            } else if latest {
+                commands::apply::run_latest(preview);
+            } else if let Some(id) = seal_id {
+                commands::apply::run(id, preview);
+            } else {
+                println!("Error: You must provide a seal ID or use --latest / --latest-global.");
+            }
+        }
         Commands::Merge { source, apply } => commands::merge::run(source, apply),
         Commands::Export { target } => match target {
             cli::ExportTarget::Seal { seal_id, zip } => {
@@ -295,13 +307,13 @@ fn main() {
                 commands::export::run(project_name, false, true, profile);
             }
         },
-        Commands::Import { file } => {
-            let adjusted_path = if let Some(r) = &root {
-                adjust_path(&original_cwd, r, &file)
+        Commands::Import { source, merge, branch } => {
+            let adjusted_source = if let Some(r) = &root {
+                adjust_path(&original_cwd, r, &source)
             } else {
-                file
+                source
             };
-            commands::import::run(adjusted_path);
+            commands::import::run(adjusted_source, merge, branch);
         }
         Commands::Settings {
             key,
@@ -311,13 +323,19 @@ fn main() {
             commands::settings::run(key, value, interactive);
         },
         Commands::Creds { command } => commands::creds::run(command),
-        Commands::Sync { stream, action, platform, force } => {
-            commands::sync::run(stream, action, platform, force);
+        Commands::Sync { stream, action, platform, force, verbose, releases, clone } => {
+            if releases {
+                commands::releases::sync_releases(stream, action, platform, force);
+            } else {
+                commands::sync::run(stream, action, platform, force, verbose, clone);
+            }
         },
         Commands::Update => {
             commands::update::run();
         }
         Commands::Pr { command } => commands::pr::run(command),
+        Commands::Releases { command } => commands::releases::run(command),
+        Commands::Stable { command } => commands::stable::run(command),
     }
 }
 

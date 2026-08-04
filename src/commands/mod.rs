@@ -18,3 +18,5 @@ pub use base_commands::merge;
 pub use base_commands::creds;
 pub use base_commands::update;
 pub use base_commands::pr;
+pub use base_commands::releases;
+pub use base_commands::stable;

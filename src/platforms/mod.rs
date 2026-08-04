@@ -22,7 +22,18 @@ pub trait SyncProvider {
 
     /// Pulls the latest remote changes of the specific stream and maps them into local `.dam/objects`.
     fn pull(&self, stream: &str) -> Result<(), Box<dyn Error>>;
-
+    /// Syncs a release object to the remote platform.
+    fn sync_release(
+        &self,
+        _release_name: &str,
+        _release_version: &str,
+        _seal_id: &str,
+        _stream: &str,
+        _description: Option<&String>,
+        _tags: &[String],
+    ) -> Result<String, Box<dyn Error>> {
+        Err("This provider does not support release sync.".into())
+    }
     /// Lists open pull requests on the remote repository.
     fn list_pull_requests(&self) -> Result<Vec<PullRequestInfo>, Box<dyn Error>>;
 

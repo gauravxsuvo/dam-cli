@@ -16,7 +16,7 @@ fn parse_version(v: &str) -> (u32, u32, u32) {
     (major, minor, patch)
 }
 
-pub fn run(name: Option<String>, upgrade: bool) {
+pub fn run(name: Option<String>, upgrade: bool, profile: Option<String>) {
     if upgrade {
         if !Path::new(".dam").exists() {
             println!("Error: No reservoir found to upgrade. Run 'dam source' to initialize one.");
@@ -145,8 +145,19 @@ pub fn run(name: Option<String>, upgrade: bool) {
         // Example for future migrations:
         // if project_version < (0, 5, 0) { ... apply 0.5.0 updates ... }
 
+        // MIGRATION: Pre-v0.5.6 Overwrite Check Defaults
+        if project_version < (0, 5, 6) {
+            println!("-> Applying v0.5.6 overwrite-check configuration defaults...");
+            if !config_content.contains("disable_overwrite_check") {
+                config_content.push_str("disable_overwrite_check = false\n");
+            }
+            if !config_content.contains("overwrite_check_exclude") {
+                config_content.push_str("overwrite_check_exclude = []\n");
+            }
+        }
+
         // --- END MIGRATIONS ---
-        
+
         // 2. Finalize version label in config
         if !config_content.contains("version =") {
             config_content.push_str(&format!("\nversion = \"{}\"\n", CURRENT_VERSION));
@@ -160,6 +171,25 @@ pub fn run(name: Option<String>, upgrade: bool) {
         fs::write(".dam/config.toml", config_content).unwrap();
 
         println!("Upgrade complete! Your reservoir has been safely updated to DAM v{}.", CURRENT_VERSION);
+        return;
+    }
+
+    // Non-interactive profile initialization: create dam.toml with the chosen profile
+    if let Some(prov) = profile {
+        if Path::new("dam.toml").exists() {
+            println!("dam.toml already exists in this directory. Aborting profile init.");
+            return;
+        }
+
+        let default_project_name = env::current_dir()
+            .ok()
+            .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| "unnamed-reservoir".to_string());
+
+        let provider = providers::get_provider(&prov);
+        let toml_content = provider.default_toml(&default_project_name);
+        fs::write("dam.toml", toml_content).unwrap();
+        println!("Created dam.toml using '{}' profile.", prov);
         return;
     }
 
@@ -270,6 +300,8 @@ suppress_nested_warning = {}
 purities_overrides_impurities = {}
 impurities_overrides_purities = {}
 enforce_password_on_project_import = {}
+disable_overwrite_check = false
+overwrite_check_exclude = []
 "#,
         CURRENT_VERSION, project_name, suppress_warning, p_override, i_override, enforce_pwd
     );

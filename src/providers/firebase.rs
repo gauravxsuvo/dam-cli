@@ -29,7 +29,7 @@ description = "A Firebase project managed by Dam"
 
 [setup]
 commands = [
-    "npm install",
+    "npm install firebase-tools -g",
     "firebase use --add"
 ]
 
