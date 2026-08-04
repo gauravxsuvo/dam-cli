@@ -65,6 +65,7 @@ pub fn run(
     platform_arg: Option<String>,
     force: bool,
     verbose: bool,
+    clone_url: Option<String>,
 ) {
     let provider_name = platform_arg.unwrap_or_else(|| "github".to_string());
     println!(
@@ -92,7 +93,13 @@ pub fn run(
         vec![current]
     };
 
-    log_verbose(verbose, &format!("Sync target resolved: provider={}, force={}, stream={:?}", provider_name, force, stream));
+    log_verbose(verbose, &format!("Sync target resolved: provider={}, force={}, stream={:?}, clone={:?}", provider_name, force, stream, clone_url));
+
+    if let Some(clone_source) = clone_url {
+        println!("🔄 Clone-based sync requested. Importing URL/Repo: {}", clone_source);
+        crate::commands::import::run(clone_source, false, None);
+        return;
+    }
 
     for s in streams_to_sync {
         if s == "main" && !force {

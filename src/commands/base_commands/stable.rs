@@ -34,13 +34,25 @@ pub fn run(command: Option<StableCommands>) {
 
     match command {
         Some(StableCommands::Assign { stream, version, description }) => {
-            assign_stable(&stream, &version, description);
+            let resolved_stream = stream.unwrap_or_else(|| {
+                fs::read_to_string(".dam/CURRENT")
+                    .unwrap_or_else(|_| "main".to_string())
+                    .trim()
+                    .to_string()
+            });
+            assign_stable(&resolved_stream, &version, description);
         }
         Some(StableCommands::List) => {
             list_stable();
         }
-        Some(StableCommands::Inspect { version }) => {
-            inspect_stable(&version);
+        Some(StableCommands::Inspect { version, latest }) => {
+            if latest {
+                inspect_latest_stable();
+            } else if let Some(v) = version {
+                inspect_stable(&v);
+            } else {
+                list_stable();
+            }
         }
         Some(StableCommands::Remove { version }) => {
             remove_stable(&version);
@@ -124,12 +136,52 @@ fn list_stable() {
     println!("\n📌 Stable Stream Versions:");
     println!("─────────────────────────────────────");
     for stable in stable_versions {
-        println!("{} -> {} ({})", stable.version, stable.stream, stable.created_at);
+        println!("{} -> {} ({}) - {}", stable.version, stable.stream, stable.created_at, stable.seal_id);
         if let Some(desc) = stable.description {
             println!("   └─ {}", desc);
         }
     }
     println!();
+}
+
+fn inspect_latest_stable() {
+    if !Path::new(stable_dir()).exists() {
+        println!("📦 No stable versions found.");
+        return;
+    }
+
+    let entries = match fs::read_dir(stable_dir()) {
+        Ok(e) => e,
+        Err(_) => {
+            println!("📦 No stable versions found.");
+            return;
+        }
+    };
+
+    let mut stable_versions: Vec<StableVersion> = Vec::new();
+    for entry in entries.flatten() {
+        if let Ok(content) = fs::read_to_string(entry.path()) {
+            if let Ok(stable) = serde_json::from_str::<StableVersion>(&content) {
+                stable_versions.push(stable);
+            }
+        }
+    }
+
+    if stable_versions.is_empty() {
+        println!("📦 No stable versions found.");
+        return;
+    }
+
+    let current_stream = fs::read_to_string(".dam/CURRENT").unwrap_or_default().trim().to_string();
+    let mut filtered: Vec<StableVersion> = stable_versions.into_iter().filter(|s| s.stream == current_stream).collect();
+    if filtered.is_empty() {
+        println!("No stable versions found for stream '{}'.", current_stream);
+        return;
+    }
+
+    filtered.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    let latest = &filtered[0];
+    inspect_stable(&latest.version);
 }
 
 fn inspect_stable(version: &str) {

@@ -44,6 +44,10 @@ exclude = [
     ".git/**", "build/**", ".dart_tool/**", ".dam/**",
     "**/*.env", "**/key.properties", "android/app/*.jks"
 ]
+
+streams = ["main"]
+releases = []
+stable = []
 "#, project_name)
     }
 }

@@ -16,7 +16,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Initialize a brand new reservoir (.dam repository) in the current directory.
+    /// Initialize a brand new reservoir (.DAM reservoir) in the current directory.
     ///
     /// This establishes your tracking pool, configuration files, and staging area.
     /// It creates a hidden `.dam` directory to store historical objects and stream data.
@@ -30,6 +30,9 @@ pub enum Commands {
         /// Optional project name. If omitted, you will be prompted to enter one interactively.
         #[arg(long, short)]
         name: Option<String>,
+        /// Initialize a `dam.toml` for a specific provider profile and exit (non-interactive)
+        #[arg(long)]
+        profile: Option<String>,
 
         /// Upgrade the current reservoir to the latest DAM version and configuration structure.
         #[arg(long)]
@@ -232,13 +235,23 @@ pub enum Commands {
         target: ExportTarget,
     },
 
-    /// Import a compressed .seal bundle or a raw .zip file into your reservoir.
+    /// Import a compressed .seal bundle, raw .zip file, .dam archive, or a Git repository URL.
     ///
     /// EXAMPLES:
-    ///   dam import bundle.seal  # Unpack a seal bundle into the reservoir
+    ///   dam import bundle.seal                     # Unpack a seal bundle into the reservoir
+    ///   dam import https://example.com/project.dam  # Download and import a DAM archive
+    ///   dam import https://github.com/user/repo.git # Clone the repository and convert it into DAM
     Import {
-        /// Path to the archive file (.seal or .zip) to import.
-        file: String,
+        /// Path or URL to import.
+        source: String,
+
+        /// If set, merge the imported project into the current repository instead of creating a standalone import.
+        #[arg(long)]
+        merge: bool,
+
+        /// Optional branch or ref to checkout when importing a Git repository.
+        #[arg(long)]
+        branch: Option<String>,
     },
 
     /// Manage reservoir configuration settings directly or via an interactive dashboard.
@@ -291,6 +304,10 @@ pub enum Commands {
         /// Sync releases instead of streams. Intelligently handles stream updates first.
         #[arg(long)]
         releases: bool,
+
+        /// Clone a Git repository and convert it to DAM instead of performing a normal sync.
+        #[arg(long)]
+        clone: Option<String>,
     },
 
     /// Check for CLI updates and view the latest release details.
@@ -484,10 +501,11 @@ pub enum ReleasesCommands {
 pub enum StableCommands {
     /// Assign a stable version to a specific stream
     Assign {
-        /// Stream name to mark as stable
-        stream: String,
         /// Stable version name
         version: String,
+        /// Optional stream name to mark as stable. Defaults to the current active stream.
+        #[arg(long)]
+        stream: Option<String>,
         /// Optional description for this stable version
         #[arg(long)]
         description: Option<String>,
@@ -496,8 +514,11 @@ pub enum StableCommands {
     List,
     /// Inspect a stable version assignment
     Inspect {
-        /// Stable version name to inspect
-        version: String,
+        /// Stable version name to inspect. Optional when using `--latest`.
+        version: Option<String>,
+        /// Inspect the latest stable assignment for the current active stream.
+        #[arg(long)]
+        latest: bool,
     },
     /// Remove a stable version assignment
     Remove {

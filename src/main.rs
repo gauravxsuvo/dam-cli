@@ -192,8 +192,8 @@ fn main() {
     let original_cwd = env::current_dir().unwrap();
 
     // The 'source' command handles its own initialization logic safely in the current dir.
-    if let Commands::Source { name, upgrade } = cli.command {
-        commands::source::run(name, upgrade);
+    if let Commands::Source { name, upgrade, profile } = cli.command {
+        commands::source::run(name, upgrade, profile);
         return;
     }
 
@@ -307,13 +307,13 @@ fn main() {
                 commands::export::run(project_name, false, true, profile);
             }
         },
-        Commands::Import { file } => {
-            let adjusted_path = if let Some(r) = &root {
-                adjust_path(&original_cwd, r, &file)
+        Commands::Import { source, merge, branch } => {
+            let adjusted_source = if let Some(r) = &root {
+                adjust_path(&original_cwd, r, &source)
             } else {
-                file
+                source
             };
-            commands::import::run(adjusted_path);
+            commands::import::run(adjusted_source, merge, branch);
         }
         Commands::Settings {
             key,
@@ -323,11 +323,11 @@ fn main() {
             commands::settings::run(key, value, interactive);
         },
         Commands::Creds { command } => commands::creds::run(command),
-        Commands::Sync { stream, action, platform, force, verbose, releases } => {
+        Commands::Sync { stream, action, platform, force, verbose, releases, clone } => {
             if releases {
                 commands::releases::sync_releases(stream, action, platform, force);
             } else {
-                commands::sync::run(stream, action, platform, force, verbose);
+                commands::sync::run(stream, action, platform, force, verbose, clone);
             }
         },
         Commands::Update => {
