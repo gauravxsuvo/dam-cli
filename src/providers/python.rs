@@ -47,6 +47,10 @@ exclude = [
     ".git/**", "__pycache__/**", "venv/**", ".venv/**", ".dam/**",
     "**/.env", "**/*.pem", "**/*.key"
 ]
+
+streams = ["main"]
+releases = []
+stable = []
 "#, project_name)
     }
 }

@@ -245,8 +245,8 @@ pub fn auto_check() {
             let mut input = String::new();
 
             if io::stdin().read_line(&mut input).is_ok() && input.trim().eq_ignore_ascii_case("y") {
-                if !package_manager_update() {
-                    execute_update(manifest);
+                if !execute_update(manifest) {
+                    package_manager_update();
                 }
                 std::process::exit(0);
             } else {
@@ -299,8 +299,8 @@ pub fn run() {
         return;
     }
 
-    if !package_manager_update() {
-        execute_update(&manifest);
+    if !execute_update(&manifest) {
+        package_manager_update();
     }
 }
 
@@ -324,7 +324,7 @@ fn has_write_permission() -> bool {
     false
 }
 
-fn execute_update(manifest: &UpdateManifest) {
+fn execute_update(manifest: &UpdateManifest) -> bool {
     // 1. Check for elevated permissions before downloading anything
     if !has_write_permission() {
         println!("❌ Permission Denied! The CLI is installed in a system or protected directory.");
@@ -332,7 +332,7 @@ fn execute_update(manifest: &UpdateManifest) {
         println!("   Try running the update command with sudo: 'sudo dam update'");
         #[cfg(windows)]
         println!("   Try running your terminal as Administrator.");
-        return;
+        return false;
     }
 
     let target_os = env::consts::OS;
@@ -351,7 +351,7 @@ fn execute_update(manifest: &UpdateManifest) {
         let archive_path = temp_dir.join(file_name);
 
         if !download_file(&download_info.url, &archive_path) {
-            return;
+            return false;
         }
 
         println!("🔒 Verifying secure checksum...");
@@ -360,7 +360,7 @@ fn execute_update(manifest: &UpdateManifest) {
                 "❌ SECURITY ALERT: Checksum mismatch! The download may be corrupted or compromised."
             );
             let _ = fs::remove_file(&archive_path);
-            return;
+            return false;
         }
         println!("✅ Checksum verified successfully.");
 
@@ -381,10 +381,15 @@ fn execute_update(manifest: &UpdateManifest) {
                 if apply_update(&new_bin_path) {
                     println!("\n✨ Successfully updated to v{}! ✨", manifest.version);
                     let _ = fs::remove_file(get_cache_path()); // Wipe cache to give the fresh binary a clean slate
+                    let _ = fs::remove_file(&archive_path);
+                    let _ = fs::remove_dir_all(&extract_dir);
+                    if let Some(pm) = detect_package_manager_install() {
+                        refresh_package_manager_hashes(pm);
+                    }
+                    return true;
                 }
             }
 
-            // Clean up ONLY on complete success
             let _ = fs::remove_file(&archive_path);
             let _ = fs::remove_dir_all(&extract_dir);
         } else {
@@ -408,6 +413,7 @@ fn execute_update(manifest: &UpdateManifest) {
         );
         println!("Please download the latest version manually from: https://dam-pcp.web.app");
     }
+    false
 }
 
 fn apply_update(new_bin: &Path) -> bool {
@@ -490,6 +496,16 @@ impl PackageManager {
         }
     }
 
+    fn refresh_commands(&self) -> Vec<Vec<&'static str>> {
+        match self {
+            PackageManager::Pacman => vec![vec!["sudo", "pacman", "-Sy"]],
+            PackageManager::Apt => vec![vec!["sudo", "apt", "update"]],
+            PackageManager::AptGet => vec![vec!["sudo", "apt-get", "update"]],
+            PackageManager::Dnf => vec![vec!["sudo", "dnf", "makecache"]],
+            PackageManager::Yum => vec![vec!["sudo", "yum", "makecache"]],
+        }
+    }
+
     fn display_command(&self) -> String {
         match self {
             PackageManager::Pacman => "sudo pacman -Syu dam".to_string(),
@@ -497,6 +513,16 @@ impl PackageManager {
             PackageManager::AptGet => "sudo apt-get update && sudo apt-get install --only-upgrade dam".to_string(),
             PackageManager::Dnf => "sudo dnf upgrade dam".to_string(),
             PackageManager::Yum => "sudo yum update dam".to_string(),
+        }
+    }
+
+    fn display_refresh_command(&self) -> String {
+        match self {
+            PackageManager::Pacman => "sudo pacman -Sy".to_string(),
+            PackageManager::Apt => "sudo apt update".to_string(),
+            PackageManager::AptGet => "sudo apt-get update".to_string(),
+            PackageManager::Dnf => "sudo dnf makecache".to_string(),
+            PackageManager::Yum => "sudo yum makecache".to_string(),
         }
     }
 }
@@ -554,7 +580,7 @@ fn package_manager_update() -> bool {
             PackageManager::Dnf => "dnf",
             PackageManager::Yum => "yum",
         });
-        println!("   This installation should be updated through your package manager, not by overwriting the binary.");
+        println!("   Direct self-update was not possible, so this is the fallback path.");
         println!("   Recommended command: {}\n", pm.display_command());
         print!("Run the package manager update now? (y/N): ");
         io::stdout().flush().unwrap();
@@ -586,6 +612,39 @@ fn package_manager_update() -> bool {
         return false;
     }
     false
+}
+
+fn refresh_package_manager_hashes(pm: PackageManager) {
+    println!("🔄 Detected package-managed installation via {}.", match pm {
+        PackageManager::Pacman => "pacman",
+        PackageManager::Apt => "apt",
+        PackageManager::AptGet => "apt-get",
+        PackageManager::Dnf => "dnf",
+        PackageManager::Yum => "yum",
+    });
+    println!("   Attempting to refresh package manager metadata / version hashes...");
+
+    for cmd in pm.refresh_commands() {
+        let mut program = Command::new(cmd[0]);
+        for arg in &cmd[1..] {
+            program.arg(arg);
+        }
+        match program.status() {
+            Ok(status) if status.success() => continue,
+            Ok(status) => {
+                println!("⚠️  Package manager refresh command exited with status {}.", status);
+                println!("   If this is a package-managed install, run '{}' manually later.", pm.display_refresh_command());
+                return;
+            }
+            Err(e) => {
+                println!("⚠️  Failed to execute package manager refresh command: {}", e);
+                println!("   If this is a package-managed install, run '{}' manually later.", pm.display_refresh_command());
+                return;
+            }
+        }
+    }
+
+    println!("✅ Package manager metadata refresh completed successfully.");
 }
 
 // --- HELPER FUNCTIONS --- //

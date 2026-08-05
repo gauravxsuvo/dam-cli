@@ -45,6 +45,11 @@ exclude = [
     ".git/**", "node_modules/**", ".firebase/**", ".dam/**",
     "**/.env", "**/serviceAccountKey.json", "firebase-debug.log"
 ]
+
+
+streams = ["main"]
+releases = []
+stable = []
 "#, project_name)
     }
 }
